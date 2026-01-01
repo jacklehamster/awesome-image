@@ -1,7 +1,7 @@
 export interface Env {
   IMAGES: R2Bucket;
   ALLOWED_HOSTS: string; // comma-separated, required (fail-closed)
-  MAX_BYTES: string; // stringified integer, e.g. "10485760"
+  MAX_BYTES: string; // e.g. "10485760"
 }
 
 function normalizeParams(reqUrl: URL) {
@@ -19,21 +19,39 @@ function allowedHost(env: Env, host: string): boolean {
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-
-  // Fail closed: if unset, do NOT become an open proxy.
-  if (list.length === 0) return false;
-
+  if (list.length === 0) return false; // fail closed
   host = host.toLowerCase();
   return list.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+}
+
+function pickFormat(req: Request, reqUrl: URL): "avif" | "webp" | "jpeg" | "png" | undefined {
+  // Explicit fmt param wins
+  const fmt = (reqUrl.searchParams.get("fmt") || "").toLowerCase();
+  if (fmt === "avif" || fmt === "webp" || fmt === "jpeg" || fmt === "jpg" || fmt === "png") {
+    return fmt === "jpg" ? "jpeg" : (fmt as any);
+  }
+
+  // Otherwise negotiate from Accept header
+  const accept = (req.headers.get("Accept") || "").toLowerCase();
+  if (accept.includes("image/avif")) return "avif";
+  if (accept.includes("image/webp")) return "webp";
+  return undefined; // keep original
+}
+
+function parseIntParam(reqUrl: URL, key: string, min: number, max: number): number | undefined {
+  const v = reqUrl.searchParams.get(key);
+  if (!v) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return undefined;
+  const clamped = Math.max(min, Math.min(max, Math.floor(n)));
+  return clamped;
 }
 
 async function readUpTo(resp: Response, maxBytes: number): Promise<ArrayBuffer> {
   const len = resp.headers.get("Content-Length");
   if (len && Number(len) > maxBytes) throw new Error("too_large");
-
   const buf = await resp.arrayBuffer();
   if (buf.byteLength > maxBytes) throw new Error("too_large");
-
   return buf;
 }
 
@@ -46,9 +64,7 @@ function cacheKeyFor(sourceUrl: URL, reqUrl: URL) {
 async function sha256Hex(input: string): Promise<string> {
   const buf = new TextEncoder().encode(input);
   const hash = await crypto.subtle.digest("SHA-256", buf);
-  return [...new Uint8Array(hash)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function withCacheHeaders(resp: Response) {
@@ -62,17 +78,6 @@ function isRedirect(status: number) {
   return status >= 300 && status < 400;
 }
 
-async function fetchManualNoRedirect(url: URL, req: Request) {
-  return fetch(url.toString(), {
-    redirect: "manual", // Workers supports "follow" or "manual"
-    cf: { cacheTtl: 0, cacheEverything: false },
-    headers: {
-      "User-Agent": "img-cache-worker/1.0",
-      Accept: req.headers.get("Accept") || "*/*",
-    },
-  });
-}
-
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (req.method !== "GET" && req.method !== "HEAD") {
@@ -80,8 +85,6 @@ export default {
     }
 
     const reqUrl = new URL(req.url);
-
-    // Source image URL passed in query param
     const raw = reqUrl.searchParams.get("url");
     if (!raw) return new Response("Missing ?url=", { status: 400 });
 
@@ -92,7 +95,6 @@ export default {
       return new Response("Invalid url", { status: 400 });
     }
 
-    // Basic proxy/SSRF protections
     if (sourceUrl.protocol !== "https:" && sourceUrl.protocol !== "http:") {
       return new Response("Only http/https allowed", { status: 400 });
     }
@@ -102,50 +104,62 @@ export default {
 
     const maxBytes = Math.max(1, Number(env.MAX_BYTES || "10485760"));
 
-    // Cache keys
+    // Transform options
+    const fmt = pickFormat(req, reqUrl); // e.g. "avif"
+    const w = parseIntParam(reqUrl, "w", 1, 4096);
+    const h = parseIntParam(reqUrl, "h", 1, 4096);
+    const q = parseIntParam(reqUrl, "q", 1, 100);
+
+    // Cache keys (include fmt/w/h/q via normalizeParams)
     const ck = cacheKeyFor(sourceUrl, reqUrl);
     const hash = await sha256Hex(ck);
     const r2Key = `v/${hash}`;
 
-    // 1) Edge cache first (use URL string to avoid TS type mismatches)
+    // Edge cache
     const cache = caches.default;
     const edgeKey = reqUrl.toString();
 
     const hit = await cache.match(edgeKey);
     if (hit) return hit;
 
-    // 2) R2 lookup
+    // R2
     const obj = await env.IMAGES.get(r2Key);
     if (obj) {
       const headers = new Headers();
       obj.writeHttpMetadata(headers);
       headers.set("ETag", obj.httpEtag);
       if (!headers.get("Content-Type")) headers.set("Content-Type", "application/octet-stream");
-
       let resp = new Response(obj.body, { status: 200, headers });
       resp = withCacheHeaders(resp);
-
       ctx.waitUntil(cache.put(edgeKey, resp.clone()));
       return resp;
     }
 
-    // 3) Miss: fetch from the provided URL (manual redirect mode, and we block redirects)
-    const upstream = await fetchManualNoRedirect(sourceUrl, req);
+    // Upstream fetch WITH image transformations.
+    // NOTE: This requires Cloudflare Image Resizing/Transformations to be enabled on your account/zone.
+    const upstream = await fetch(sourceUrl.toString(), {
+      redirect: "manual",
+      headers: {
+        "User-Agent": "img-cache-worker/1.0",
+        Accept: req.headers.get("Accept") || "*/*",
+      },
+      cf: {
+        cacheTtl: 0,
+        cacheEverything: false,
+        image: {
+          // Only set properties if provided; undefined is fine
+          format: fmt,     // "avif" | "webp" | ...
+          width: w,
+          height: h,
+          quality: q,
+        },
+      } as any, // TS may not include cf.image in workers-types depending on version
+    });
 
-    if (isRedirect(upstream.status)) {
-      // Safer default: block redirects entirely.
-      // (If you want to allow 1 redirect within allowlist, ask and I’ll add it.)
-      return new Response("Redirects not allowed", { status: 400 });
-    }
-
-    if (!upstream.ok) {
-      return new Response(`Upstream error: ${upstream.status}`, { status: 502 });
-    }
+    if (isRedirect(upstream.status)) return new Response("Redirects not allowed", { status: 400 });
+    if (!upstream.ok) return new Response(`Upstream error: ${upstream.status}`, { status: 502 });
 
     const contentType = upstream.headers.get("Content-Type") || "application/octet-stream";
-    if (!contentType.startsWith("image/")) {
-      return new Response("Upstream is not an image", { status: 415 });
-    }
 
     let bytes: ArrayBuffer;
     try {
@@ -155,17 +169,15 @@ export default {
       return new Response("Failed to read image", { status: 502 });
     }
 
-    // Save to R2 (async)
+    // Store transformed result
     ctx.waitUntil(
       env.IMAGES.put(r2Key, bytes, {
         httpMetadata: { contentType },
       })
     );
 
-    // Respond + fill edge cache
     let resp = new Response(bytes, { status: 200, headers: { "Content-Type": contentType } });
     resp = withCacheHeaders(resp);
-
     ctx.waitUntil(cache.put(edgeKey, resp.clone()));
     return resp;
   },
