@@ -1,4 +1,14 @@
-name = "cloudflare-worker"
-compatibility_date = "2025-03-21"
+name = "awesome-image"
+compatibility_date = "2025-12-31"
 main = "src/index.ts"
 compatibility_flags = ["nodejs_compat"]
+
+# Bind R2 bucket
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "img-cache-bucket"
+preview_bucket_name = "img-cache-bucket-dev"
+
+[vars]
+ALLOWED_HOSTS = "raw.githubusercontent.com,proxy.dobuki.net"
+MAX_BYTES = "10485760"
