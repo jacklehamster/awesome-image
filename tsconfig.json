@@ -1,15 +1,11 @@
 {
   "compilerOptions": {
-    "target": "esnext",
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "outDir": "dist",
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
     "types": ["@cloudflare/workers-types"],
-    "lib": ["esnext", "webworker"],
-  },
-  "include": ["src/**/*", "src/declarations.d.ts"]
+    "strict": true,
+    "skipLibCheck": true
+  }
 }

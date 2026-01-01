@@ -100,7 +100,7 @@ export default {
 
     // 1) Edge cache first
     const cache = caches.default;
-    const edgeKey = new Request(reqUrl.toString(), req);
+    const edgeKey = reqUrl.toString();
     const hit = await cache.match(edgeKey);
     if (hit) return hit;
 
