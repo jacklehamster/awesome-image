@@ -5,7 +5,6 @@ export interface Env {
 }
 
 function normalizeParams(reqUrl: URL) {
-  // Keep only transform-relevant params in a stable order
   const keep = ["w", "h", "q", "fmt"];
   const parts: string[] = [];
   for (const k of keep) {
@@ -39,9 +38,6 @@ async function readUpTo(resp: Response, maxBytes: number): Promise<ArrayBuffer> 
 }
 
 function cacheKeyFor(sourceUrl: URL, reqUrl: URL) {
-  // Stable cache key based on:
-  // - full source URL (origin + path + query)
-  // - transform params from request (w/h/q/fmt)
   const p = normalizeParams(reqUrl);
   const src = sourceUrl.toString();
   return p ? `${src}::${p}` : src;
@@ -60,6 +56,21 @@ function withCacheHeaders(resp: Response) {
   h.set("Cache-Control", "public, max-age=31536000, immutable");
   h.set("Vary", "Accept");
   return new Response(resp.body, { status: resp.status, headers: h });
+}
+
+function isRedirect(status: number) {
+  return status >= 300 && status < 400;
+}
+
+async function fetchManualNoRedirect(url: URL, req: Request) {
+  return fetch(url.toString(), {
+    redirect: "manual", // Workers supports "follow" or "manual"
+    cf: { cacheTtl: 0, cacheEverything: false },
+    headers: {
+      "User-Agent": "img-cache-worker/1.0",
+      Accept: req.headers.get("Accept") || "*/*",
+    },
+  });
 }
 
 export default {
@@ -96,9 +107,10 @@ export default {
     const hash = await sha256Hex(ck);
     const r2Key = `v/${hash}`;
 
-    // 1) Edge cache first
+    // 1) Edge cache first (use URL string to avoid TS type mismatches)
     const cache = caches.default;
     const edgeKey = reqUrl.toString();
+
     const hit = await cache.match(edgeKey);
     if (hit) return hit;
 
@@ -117,15 +129,14 @@ export default {
       return resp;
     }
 
-    // 3) Miss: fetch from the provided URL (no redirects)
-    const upstream = await fetch(sourceUrl.toString(), {
-      redirect: "error",
-      cf: { cacheTtl: 0, cacheEverything: false },
-      headers: {
-        "User-Agent": "img-cache-worker/1.0",
-        Accept: req.headers.get("Accept") || "*/*",
-      },
-    });
+    // 3) Miss: fetch from the provided URL (manual redirect mode, and we block redirects)
+    const upstream = await fetchManualNoRedirect(sourceUrl, req);
+
+    if (isRedirect(upstream.status)) {
+      // Safer default: block redirects entirely.
+      // (If you want to allow 1 redirect within allowlist, ask and I’ll add it.)
+      return new Response("Redirects not allowed", { status: 400 });
+    }
 
     if (!upstream.ok) {
       return new Response(`Upstream error: ${upstream.status}`, { status: 502 });
