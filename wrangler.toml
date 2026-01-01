@@ -11,7 +11,11 @@ preview_bucket_name = "img-cache-bucket-dev"
 
 [vars]
 ALLOWED_HOSTS = "raw.githubusercontent.com,proxy.dobuki.net,jacklehamster.github.io"
-MAX_BYTES = "10485760"
+MAX_BYTES = "10485760"          # 10 MiB
+MAX_DIM = "4096"                # clamp w/h
+MAX_PIXELS = "16777216"         # 4096*4096
+CACHE_VERSION = "v1"
+PURGE_TOKEN = "change-me-long-random"
 
 [observability]
 [observability.logs]
