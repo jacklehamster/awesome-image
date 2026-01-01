@@ -1,5 +1,3 @@
-import { caches } from "@cloudflare/workers-types";
-
 export interface Env {
   IMAGES: R2Bucket;
   ALLOWED_HOSTS: string; // comma-separated, required (fail-closed)
