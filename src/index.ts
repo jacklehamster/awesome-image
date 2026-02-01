@@ -222,6 +222,7 @@ export default {
     if (sourceUrl.protocol !== "https:" && sourceUrl.protocol !== "http:") {
       return new Response("Only http/https allowed", { status: 400 });
     }
+    console.log("SourceUrl", sourceUrl.hostname, "ALLOWED_HOSTS", env.ALLOWED_HOSTS);
     if (!allowedHost(env, sourceUrl.hostname)) {
       return new Response("Source host not allowed", { status: 403 });
     }
