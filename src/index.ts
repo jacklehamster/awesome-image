@@ -2,12 +2,12 @@ export interface Env {
   IMAGES: R2Bucket;
 
   ALLOWED_HOSTS: string; // comma-separated allowlist; fail-closed
-  MAX_BYTES: string;     // e.g. "10485760"
-  MAX_DIM: string;       // e.g. "4096"
-  MAX_PIXELS: string;    // e.g. "16777216"
+  MAX_BYTES: string; // e.g. "10485760"
+  MAX_DIM: string; // e.g. "4096"
+  MAX_PIXELS: string; // e.g. "16777216"
   CACHE_VERSION: string; // e.g. "v1"
 
-  PURGE_TOKEN: string;   // required for purge endpoint
+  PURGE_TOKEN: string; // required for purge endpoint
 }
 
 const COMMON_FORMATS: Array<"avif" | "webp" | "jpeg" | "png" | "orig"> = [
@@ -28,14 +28,21 @@ function allowedHost(env: Env, host: string): boolean {
   if (list.length === 0) return false;
 
   host = host.toLowerCase();
-  return list.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+  return list.some(
+    (allowed) => host === allowed || host.endsWith(`.${allowed}`),
+  );
 }
 
 function clampInt(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-function parseIntParam(reqUrl: URL, key: string, min: number, max: number): number | undefined {
+function parseIntParam(
+  reqUrl: URL,
+  key: string,
+  min: number,
+  max: number,
+): number | undefined {
   const v = reqUrl.searchParams.get(key);
   if (!v) return undefined;
   const n = Number(v);
@@ -48,11 +55,19 @@ function parseIntParam(reqUrl: URL, key: string, min: number, max: number): numb
  * - If fmt is explicitly set, respect it (normalized)
  * - Else choose best supported by client: avif -> webp -> (orig)
  */
-function negotiatedFormat(req: Request, reqUrl: URL): "avif" | "webp" | "jpeg" | "png" | "orig" {
+function negotiatedFormat(
+  req: Request,
+  reqUrl: URL,
+): "avif" | "webp" | "jpeg" | "png" | "orig" {
   const explicit = (reqUrl.searchParams.get("fmt") || "").toLowerCase();
   if (explicit) {
     if (explicit === "jpg") return "jpeg";
-    if (explicit === "avif" || explicit === "webp" || explicit === "jpeg" || explicit === "png") {
+    if (
+      explicit === "avif" ||
+      explicit === "webp" ||
+      explicit === "jpeg" ||
+      explicit === "png"
+    ) {
       return explicit as any;
     }
     if (explicit === "orig" || explicit === "original") return "orig";
@@ -67,28 +82,42 @@ function negotiatedFormat(req: Request, reqUrl: URL): "avif" | "webp" | "jpeg" |
 async function sha256Hex(input: string): Promise<string> {
   const buf = new TextEncoder().encode(input);
   const hash = await crypto.subtle.digest("SHA-256", buf);
-  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return [...new Uint8Array(hash)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 /**
  * We must ensure cache keys vary by negotiated format and normalized transform params.
  * We do that by building an internal URL used for cache keying and hashing.
  */
-function buildInternalCacheURL(reqUrl: URL, fmt: string, w?: number, h?: number, q?: number): URL {
+function buildInternalCacheURL(
+  reqUrl: URL,
+  fmt: string,
+  w?: number,
+  h?: number,
+  q?: number,
+): URL {
   const u = new URL(reqUrl.toString());
 
   // Normalize transform params:
   // - Always set fmt (negotiated or explicit)
   // - Normalize w/h/q only if present
   u.searchParams.set("fmt", fmt);
-  if (w) u.searchParams.set("w", String(w)); else u.searchParams.delete("w");
-  if (h) u.searchParams.set("h", String(h)); else u.searchParams.delete("h");
-  if (q) u.searchParams.set("q", String(q)); else u.searchParams.delete("q");
+  if (w) u.searchParams.set("w", String(w));
+  else u.searchParams.delete("w");
+  if (h) u.searchParams.set("h", String(h));
+  else u.searchParams.delete("h");
+  if (q) u.searchParams.set("q", String(q));
+  else u.searchParams.delete("q");
 
   return u;
 }
 
-async function readUpTo(resp: Response, maxBytes: number): Promise<ArrayBuffer> {
+async function readUpTo(
+  resp: Response,
+  maxBytes: number,
+): Promise<ArrayBuffer> {
   const len = resp.headers.get("Content-Length");
   if (len && Number(len) > maxBytes) throw new Error("too_large");
 
@@ -119,7 +148,10 @@ function requirePurgeAuth(req: Request, env: Env, reqUrl: URL): boolean {
   return Boolean(env.PURGE_TOKEN) && token === env.PURGE_TOKEN;
 }
 
-async function computeKeys(env: Env, internalUrl: URL): Promise<{ edgeKey: string; r2Key: string }> {
+async function computeKeys(
+  env: Env,
+  internalUrl: URL,
+): Promise<{ edgeKey: string; r2Key: string }> {
   const edgeKey = internalUrl.toString();
   const version = env.CACHE_VERSION || "v1";
   const hash = await sha256Hex(`${version}::${edgeKey}`);
@@ -127,14 +159,22 @@ async function computeKeys(env: Env, internalUrl: URL): Promise<{ edgeKey: strin
   return { edgeKey, r2Key };
 }
 
-async function purgeVariant(env: Env, edgeKey: string, r2Key: string): Promise<void> {
+async function purgeVariant(
+  env: Env,
+  edgeKey: string,
+  r2Key: string,
+): Promise<void> {
   // Purge edge cache + R2 variant
   await caches.default.delete(edgeKey);
   await env.IMAGES.delete(r2Key);
 }
 
 export default {
-  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(
+    req: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const reqUrl = new URL(req.url);
 
     // -------------------------
@@ -143,8 +183,10 @@ export default {
     // POST /purge?url=...&w=...&h=...&q=...&fmt=avif|webp|jpeg|png|orig
     // Optional: &all=1 to purge common formats (avif/webp/jpeg/png/orig)
     if (reqUrl.pathname === "/purge") {
-      if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
-      if (!requirePurgeAuth(req, env, reqUrl)) return new Response("Forbidden", { status: 403 });
+      if (req.method !== "POST")
+        return new Response("Method Not Allowed", { status: 405 });
+      if (!requirePurgeAuth(req, env, reqUrl))
+        return new Response("Forbidden", { status: 403 });
 
       const raw = reqUrl.searchParams.get("url");
       if (!raw) return new Response("Missing ?url=", { status: 400 });
@@ -157,7 +199,10 @@ export default {
       }
 
       // For purge, still enforce allowlist so you don’t become a remote purge tool
-      if ((sourceUrl.protocol !== "https:" && sourceUrl.protocol !== "http:") || !allowedHost(env, sourceUrl.hostname)) {
+      if (
+        (sourceUrl.protocol !== "https:" && sourceUrl.protocol !== "http:") ||
+        !allowedHost(env, sourceUrl.hostname)
+      ) {
         return new Response("Source host not allowed", { status: 403 });
       }
 
@@ -167,8 +212,12 @@ export default {
       const q = parseIntParam(reqUrl, "q", 1, 100);
 
       // Optional safety: max pixels
-      const maxPixels = Math.max(1, Number(env.MAX_PIXELS || String(maxDim * maxDim)));
-      if (w && h && w * h > maxPixels) return new Response("Requested size too large", { status: 400 });
+      const maxPixels = Math.max(
+        1,
+        Number(env.MAX_PIXELS || String(maxDim * maxDim)),
+      );
+      if (w && h && w * h > maxPixels)
+        return new Response("Requested size too large", { status: 400 });
 
       const all = reqUrl.searchParams.get("all") === "1";
 
@@ -187,7 +236,13 @@ export default {
 
       for (const fmt of purgeFormats) {
         try {
-          const internalUrl = buildInternalCacheURL(baseServingUrl, fmt, w, h, q);
+          const internalUrl = buildInternalCacheURL(
+            baseServingUrl,
+            fmt,
+            w,
+            h,
+            q,
+          );
           const { edgeKey, r2Key } = await computeKeys(env, internalUrl);
           await purgeVariant(env, edgeKey, r2Key);
           results.push({ fmt, ok: true });
@@ -196,10 +251,13 @@ export default {
         }
       }
 
-      return new Response(JSON.stringify({ ok: true, purged: results }, null, 2), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ ok: true, purged: results }, null, 2),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
     }
 
     // -------------------------
@@ -222,14 +280,22 @@ export default {
     if (sourceUrl.protocol !== "https:" && sourceUrl.protocol !== "http:") {
       return new Response("Only http/https allowed", { status: 400 });
     }
-    console.log("SourceUrl", sourceUrl.hostname, "ALLOWED_HOSTS", env.ALLOWED_HOSTS);
+    console.log(
+      "SourceUrl",
+      sourceUrl.hostname,
+      "ALLOWED_HOSTS",
+      env.ALLOWED_HOSTS,
+    );
     if (!allowedHost(env, sourceUrl.hostname)) {
       return new Response("Source host not allowed", { status: 403 });
     }
 
     const maxBytes = Math.max(1, Number(env.MAX_BYTES || "10485760"));
     const maxDim = Math.max(1, Number(env.MAX_DIM || "4096"));
-    const maxPixels = Math.max(1, Number(env.MAX_PIXELS || String(maxDim * maxDim)));
+    const maxPixels = Math.max(
+      1,
+      Number(env.MAX_PIXELS || String(maxDim * maxDim)),
+    );
 
     // Resize params (clamped)
     const w = parseIntParam(reqUrl, "w", 1, maxDim);
@@ -258,7 +324,8 @@ export default {
       const headers = new Headers();
       obj.writeHttpMetadata(headers);
       headers.set("ETag", obj.httpEtag);
-      if (!headers.get("Content-Type")) headers.set("Content-Type", "application/octet-stream");
+      if (!headers.get("Content-Type"))
+        headers.set("Content-Type", "application/octet-stream");
 
       let resp = new Response(obj.body, { status: 200, headers });
       resp = withCacheHeaders(resp);
@@ -267,46 +334,103 @@ export default {
     }
 
     // 3) Miss: fetch + transform (manual redirects; block 3xx)
-    // NOTE: Requires Cloudflare Image Transformations enabled on the zone.
-    const upstream = await fetch(sourceUrl.toString(), {
+    // NOTE: Cloudflare Image Transformations can't decode AVIF input. So if upstream is AVIF,
+    // we must be able to pass-through without cf.image.
+    const wantResize = Boolean(w || h || q);
+    const wantTransform = fmt !== "orig" || wantResize;
+
+    // If no transform is needed (common case), DO NOT use cf.image at all.
+    // This is the key that lets AVIF pass through.
+    const upstreamReqInit: RequestInit & { cf?: any } = {
       redirect: "manual",
       headers: {
         "User-Agent": "awesome-image/1.0",
         Accept: req.headers.get("Accept") || "*/*",
       },
-      cf: {
+    };
+
+    if (wantTransform) {
+      upstreamReqInit.cf = {
         cacheTtl: 0,
         cacheEverything: false,
-        image: fmt === "orig"
-          ? { width: w, height: h } // still allow resize even if keeping original format
-          : { format: fmt, width: w, height: h, quality: q },
-      } as any, // workers-types may not include cf.image in your TS version
-    });
-
-    if (isRedirect(upstream.status)) return new Response("Redirects not allowed", { status: 400 });
-    if (!upstream.ok) return new Response(`Upstream error: ${upstream.status}`, { status: 502 });
-
-    const contentType = upstream.headers.get("Content-Type") || "application/octet-stream";
-
-    // Basic content-type sanity (if cf.image runs, this will usually be image/*)
-    if (!contentType.startsWith("image/")) {
-      return new Response("Upstream is not an image", { status: 415 });
+        image:
+          fmt === "orig"
+            ? { width: w, height: h }
+            : { format: fmt, width: w, height: h, quality: q },
+      };
     }
+
+    let upstream = await fetch(sourceUrl.toString(), upstreamReqInit);
+
+    if (isRedirect(upstream.status))
+      return new Response("Redirects not allowed", { status: 400 });
+
+    // If cf.image failed with 415 (common when input is AVIF), retry WITHOUT cf.image.
+    // If it's already an image (esp AVIF) and no resize requested, pass it through.
+    if (upstream.status === 415) {
+      // Retry raw fetch without cf.image
+      const rawUpstream = await fetch(sourceUrl.toString(), {
+        redirect: "manual",
+        headers: upstreamReqInit.headers,
+      });
+
+      if (isRedirect(rawUpstream.status))
+        return new Response("Redirects not allowed", { status: 400 });
+      if (!rawUpstream.ok)
+        return new Response(`Upstream error: ${rawUpstream.status}`, {
+          status: 502,
+        });
+
+      const rawCT = (
+        rawUpstream.headers.get("Content-Type") || ""
+      ).toLowerCase();
+
+      // If caller asked for resize, we can't resize AVIF (or anything) without cf.image,
+      // so return a clear error.
+      if (wantResize) {
+        return new Response(
+          "Unsupported: cannot resize this upstream format (AVIF input is not supported by CF image resizing).",
+          { status: 415 },
+        );
+      }
+
+      // Pass-through if it's an image (this fixes your AVIF case)
+      if (!rawCT.startsWith("image/"))
+        return new Response("Upstream is not an image", { status: 415 });
+
+      upstream = rawUpstream;
+    }
+
+    // Normal error handling
+    if (!upstream.ok)
+      return new Response(`Upstream error: ${upstream.status}`, {
+        status: 502,
+      });
+
+    const contentType =
+      upstream.headers.get("Content-Type") || "application/octet-stream";
+    if (!contentType.startsWith("image/"))
+      return new Response("Upstream is not an image", { status: 415 });
 
     let bytes: ArrayBuffer;
     try {
       bytes = await readUpTo(upstream, maxBytes);
     } catch (e: any) {
-      if (e?.message === "too_large") return new Response("Image too large", { status: 413 });
+      if (e?.message === "too_large")
+        return new Response("Image too large", { status: 413 });
       return new Response("Failed to read image", { status: 502 });
     }
 
     // Store variant + cache
-    ctx.waitUntil(env.IMAGES.put(r2Key, bytes, { httpMetadata: { contentType } }));
+    ctx.waitUntil(
+      env.IMAGES.put(r2Key, bytes, { httpMetadata: { contentType } }),
+    );
 
-    let resp = new Response(bytes, { status: 200, headers: { "Content-Type": contentType } });
+    let resp = new Response(bytes, {
+      status: 200,
+      headers: { "Content-Type": contentType },
+    });
     resp = withCacheHeaders(resp);
-
     ctx.waitUntil(caches.default.put(edgeKey, resp.clone()));
     return resp;
   },
